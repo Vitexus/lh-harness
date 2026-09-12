@@ -1,0 +1,135 @@
+#compdef lh-harness
+# Zsh completion for lh-harness (https://github.com/AMAP-ML/LongHorizon-Harness)
+
+_lh_harness() {
+    local -a agent_choices plugin_agent_choices plugin_names lang_choices subcommands
+    agent_choices=(claude_code codex deepseek_harness opencode)
+    plugin_agent_choices=(claude_code codex)
+    plugin_names=(codex-computer-use open-computer-use clawdcursor)
+    lang_choices=(en zh)
+    subcommands=(run dashboard web doctor plugin init check-update)
+
+    local -a global_opts run_opts dashboard_opts web_opts doctor_opts init_opts
+    local -a check_update_opts plugin_opts plugin_list_opts plugin_install_opts plugin_uninstall_opts
+
+    global_opts=(-h --help -V --version)
+
+    run_opts=(
+        --task --agent --model --reasoning-effort
+        --manager-agent --manager-model --manager-reasoning-effort
+        --executor-agent --executor-model --executor-reasoning-effort
+        --gui-executor-agent --gui-executor-model --gui-executor-reasoning-effort
+        --cli-executor-agent --cli-executor-model --cli-executor-reasoning-effort
+        --auditor-agent --auditor-model --auditor-reasoning-effort
+        --gui-auditor-agent --gui-auditor-model --gui-auditor-reasoning-effort
+        --cli-auditor-agent --cli-auditor-model --cli-auditor-reasoning-effort
+        --final-response-agent --final-response-model --final-response-reasoning-effort
+        --env --runs-root --run-id --workspace --harness-dir --log-dir
+        --api-key --base-url --prompt-language
+        --claude-mcp-config --codex-mcp-config --mcp-add-dir --guard-exclude-path
+        --max-rounds --manager-timeout --gui-executor-timeout --cli-executor-timeout
+        --auditor-timeout --dashboard --no-dashboard --dashboard-port
+        --dashboard-host --dashboard-no-open --dashboard-auth-token --keep-dashboard
+        -h --help
+    )
+    dashboard_opts=(--runs-root --log-dir --workspace-root --host --port --no-open --auth-token -h --help)
+    web_opts=(--runs-root --workspace-root --log-dir --host --port --no-open --auth-token -h --help)
+    doctor_opts=(-h --help)
+    init_opts=(--force -h --help)
+    check_update_opts=(-h --help)
+    plugin_opts=(-h --help)
+    plugin_list_opts=(-h --help)
+    plugin_install_opts=(--agent --no-activate -h --help)
+    plugin_uninstall_opts=(-h --help)
+
+    local cur=${words[CURRENT]}
+    local prev=${words[CURRENT-1]}
+
+    # Value completion for options with a fixed choice set
+    case "$prev" in
+        --agent|--manager-agent|--executor-agent|--gui-executor-agent|\
+        --cli-executor-agent|--auditor-agent|--gui-auditor-agent|\
+        --cli-auditor-agent|--final-response-agent)
+            compadd -a agent_choices
+            return
+            ;;
+        --env)
+            compadd local
+            return
+            ;;
+        --prompt-language)
+            compadd -a lang_choices
+            return
+            ;;
+        --workspace|--workspace-root|--runs-root|--harness-dir|--log-dir|\
+        --claude-mcp-config|--codex-mcp-config|--mcp-add-dir|--guard-exclude-path|--task)
+            _files
+            return
+            ;;
+    esac
+
+    # Find the subcommand and (for "plugin") its sub-subcommand
+    local subcommand= subword=
+    local i w
+    for (( i = 2; i < CURRENT; i++ )); do
+        w=${words[i]}
+        [[ $w == -* ]] && continue
+        if [[ -z $subcommand ]]; then
+            subcommand=$w
+        elif [[ $subcommand == plugin && -z $subword ]]; then
+            subword=$w
+        fi
+    done
+
+    if [[ -z $subcommand ]]; then
+        if [[ $cur == -* ]]; then
+            compadd -a global_opts
+        else
+            compadd -a subcommands
+        fi
+        return
+    fi
+
+    if [[ $subcommand == plugin && $prev == --agent ]]; then
+        compadd -a plugin_agent_choices
+        return
+    fi
+
+    case "$subcommand" in
+        run) compadd -a run_opts ;;
+        dashboard) compadd -a dashboard_opts ;;
+        web) compadd -a web_opts ;;
+        doctor) compadd -a doctor_opts ;;
+        init) compadd -a init_opts ;;
+        check-update) compadd -a check_update_opts ;;
+        plugin)
+            if [[ -z $subword ]]; then
+                if [[ $cur == -* ]]; then
+                    compadd -a plugin_opts
+                else
+                    compadd list install uninstall
+                fi
+                return
+            fi
+            case "$subword" in
+                list) compadd -a plugin_list_opts ;;
+                install)
+                    if [[ $cur == -* ]]; then
+                        compadd -a plugin_install_opts
+                    else
+                        compadd -a plugin_names
+                    fi
+                    ;;
+                uninstall)
+                    if [[ $cur == -* ]]; then
+                        compadd -a plugin_uninstall_opts
+                    else
+                        compadd -a plugin_names
+                    fi
+                    ;;
+            esac
+            ;;
+    esac
+}
+
+_lh_harness

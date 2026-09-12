@@ -17,6 +17,10 @@ override_dh_auto_install:
 	    debian/lh-harness/usr/share/metainfo/cz.vitexsoftware.lh-harness.metainfo.xml
 	install -D -m 644 lh-harness.svg \
 	    debian/lh-harness/usr/share/icons/hicolor/scalable/apps/cz.vitexsoftware.lh-harness.svg
+	install -D -m 644 completions/lh-harness.bash \
+	    debian/lh-harness/usr/share/bash-completion/completions/lh-harness
+	install -D -m 644 completions/_lh-harness \
+	    debian/lh-harness/usr/share/zsh/vendor-completions/_lh-harness
 
 override_dh_auto_test:
 	# Skip tests - test dependencies (httpx2) not packaged
