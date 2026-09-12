@@ -1,0 +1,38 @@
+Source: lh-harness
+Section: python
+Priority: optional
+Maintainer: Vítězslav Dvořák <info@vitexsoftware.cz>
+Build-Depends:
+ debhelper-compat (= 13),
+ dh-python,
+ pybuild-plugin-pyproject,
+ python3-all,
+ python3-hatchling,
+Standards-Version: 4.7.0
+Homepage: https://github.com/AMAP-ML/LongHorizon-Harness
+Vcs-Git: https://github.com/Vitexus/lh-harness.git
+Vcs-Browser: https://github.com/Vitexus/lh-harness
+Rules-Requires-Root: no
+
+Package: lh-harness
+Architecture: all
+Depends:
+ ${misc:Depends},
+ ${python3:Depends},
+ python3-fastapi,
+ python3-uvicorn,
+ python3-websockets,
+ python3-packaging,
+Description: role-orchestrated harness for long-horizon computer-use tasks
+ lh-harness coordinates Claude Code, Codex, OpenCode, or DeepSeek Harness
+ through Manager/Executor/Auditor roles to keep an agent working reliably
+ across desktop and terminal tasks that span many hours: it plans, acts,
+ verifies results independently, and checkpoints or recovers as needed.
+ .
+ This package ships the lh-harness CLI. It does not bundle the optional
+ browser-based Web UI, since building that requires a Node.js toolchain
+ not available at build time here; the CLI (lh-harness run, lh-harness
+ init, etc.) is fully functional without it.
+ .
+ Requires one of the following agent backends in PATH at runtime:
+ claude, codex, opencode, or dsh.
