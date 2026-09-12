@@ -3,8 +3,10 @@ Section: python
 Priority: optional
 Maintainer: Vítězslav Dvořák <info@vitexsoftware.cz>
 Build-Depends:
+ appstream,
  debhelper-compat (= 13),
  dh-python,
+ help2man,
  pybuild-plugin-pyproject,
  python3-all,
  python3-hatchling,

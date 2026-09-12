@@ -47,3 +47,4 @@ env.local.sh
 .vscode/
 .lh-harness-quickstart/
 debian/.debhelper/
+debian/*.1

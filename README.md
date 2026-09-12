@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="lh-harness.svg" alt="LongHorizon-Harness logo" width="120">
+
 # LongHorizon-Harness
 
 ### Loop Engineering for Computer-Use Agents

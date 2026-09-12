@@ -5,5 +5,19 @@ export PYBUILD_NAME=lh_harness
 %:
 	dh $@ --with python3 --buildsystem=pybuild
 
+override_dh_auto_install:
+	dh_auto_install --destdir=debian/lh-harness
+	PYTHONPATH=$$(echo debian/lh-harness/usr/lib/python3*/dist-packages) \
+	    help2man --no-discard-stderr --no-info \
+	    --name="role-orchestrated harness for long-horizon computer-use tasks" \
+	    --version-string="$(shell dpkg-parsechangelog -S Version | sed 's/-.*//')" \
+	    debian/lh-harness/usr/bin/lh-harness \
+	    -o debian/lh-harness.1
+	install -D -m 644 debian/lh-harness.metainfo.xml \
+	    debian/lh-harness/usr/share/metainfo/cz.vitexsoftware.lh-harness.metainfo.xml
+	install -D -m 644 lh-harness.svg \
+	    debian/lh-harness/usr/share/icons/hicolor/scalable/apps/cz.vitexsoftware.lh-harness.svg
+
 override_dh_auto_test:
 	# Skip tests - test dependencies (httpx2) not packaged
+	appstreamcli validate --pedantic --no-net debian/lh-harness.metainfo.xml

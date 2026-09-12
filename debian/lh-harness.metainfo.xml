@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="console-application">
+  <id>cz.vitexsoftware.lh-harness</id>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+  <name>LongHorizon-Harness</name>
+  <summary>Role-orchestrated harness for long-horizon computer-use tasks</summary>
+  <description>
+    <p>
+      LongHorizon-Harness coordinates Claude Code, Codex, OpenCode, or
+      DeepSeek Harness through Manager, Executor, and Auditor roles to
+      keep an agent working reliably across desktop and terminal tasks
+      that span many hours. It plans, acts, verifies results
+      independently, and checkpoints or recovers as needed rather than
+      losing progress when a single agent invocation runs out of context
+      or drifts off task.
+    </p>
+    <p>
+      Tasks can blend GUI workflows, such as clicking, scrolling, and
+      document editing, with CLI operations like code modification,
+      command execution, and system configuration.
+    </p>
+    <p>
+      This package ships the lh-harness CLI only; the optional
+      browser-based Web UI is not bundled, since building it requires a
+      Node.js toolchain. The CLI, including <code>lh-harness run</code>,
+      <code>lh-harness init</code>, and <code>lh-harness doctor</code>,
+      is fully functional without it.
+    </p>
+    <p>
+      Requires one of the following agent backends to be available in
+      <code>PATH</code> at runtime: <code>claude</code>, <code>codex</code>,
+      <code>opencode</code>, or <code>dsh</code>.
+    </p>
+  </description>
+  <icon type="stock">cz.vitexsoftware.lh-harness</icon>
+  <provides>
+    <binary>lh-harness</binary>
+  </provides>
+  <categories>
+    <category>System</category>
+    <category>Utility</category>
+  </categories>
+  <url type="homepage">https://github.com/AMAP-ML/LongHorizon-Harness</url>
+  <url type="vcs-browser">https://github.com/Vitexus/lh-harness</url>
+  <developer id="cz.vitexsoftware">
+    <name>VitexSoftware</name>
+  </developer>
+  <releases>
+    <release version="0.1.7" date="2026-09-12"/>
+  </releases>
+  <content_rating type="oars-1.1"/>
+</component>
