@@ -7,6 +7,8 @@ Build-Depends:
  debhelper-compat (= 13),
  dh-python,
  help2man,
+ nodejs (>= 20),
+ npm,
  pybuild-plugin-pyproject,
  python3-all,
  python3-hatchling,
@@ -31,10 +33,9 @@ Description: role-orchestrated harness for long-horizon computer-use tasks
  across desktop and terminal tasks that span many hours: it plans, acts,
  verifies results independently, and checkpoints or recovers as needed.
  .
- This package ships the lh-harness CLI. It does not bundle the optional
- browser-based Web UI, since building that requires a Node.js toolchain
- not available at build time here; the CLI (lh-harness run, lh-harness
- init, etc.) is fully functional without it.
+ This package ships both the lh-harness CLI and its browser-based Web UI
+ (lh-harness dashboard / lh-harness web) — the React/Vite frontend is
+ built from source at package build time.
  .
  Requires one of the following agent backends in PATH at runtime:
  claude, codex, opencode, or dsh.
