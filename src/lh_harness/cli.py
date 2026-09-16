@@ -379,6 +379,67 @@ def _claim_supervised_owner(run_id: str, run_dir: Path) -> None:
     })
 
 
+def _resume_standalone_run_dir(
+    runs_root: str | Path,
+    requested_run_id: str,
+) -> tuple[str, Path, dict[str, Any]]:
+    """Adopt an existing run directory for standalone resume."""
+    root = Path(runs_root).expanduser().resolve()
+    candidate = str(requested_run_id).strip()
+    if (
+        not candidate
+        or candidate in {".", ".."}
+        or "/" in candidate
+        or "\\" in candidate
+        or "\x00" in candidate
+    ):
+        raise ValueError("run id must be a non-empty single path component")
+    run_dir = root / candidate
+    try:
+        resolved = run_dir.resolve(strict=False)
+        resolved.relative_to(root)
+    except (OSError, RuntimeError, ValueError):
+        raise ValueError("run id resolves outside the configured runs root") from None
+
+    if not run_dir.is_dir() or run_dir.is_symlink():
+        raise ValueError(f"run directory does not exist or is invalid: {candidate}")
+
+    owner_path = run_dir / "control" / "owner.json"
+    status_path = run_dir / "control" / "status.json"
+    owner: dict[str, Any] = {}
+    status: dict[str, Any] = {}
+    if owner_path.is_file():
+        try:
+            owner = _read_supervised_record(
+                owner_path,
+                unavailable_message="owner metadata unavailable",
+                invalid_message="owner metadata invalid",
+                too_large_message="owner metadata too large",
+            )
+        except Exception:
+            pass
+    if status_path.is_file():
+        try:
+            status = _read_supervised_record(
+                status_path,
+                unavailable_message="status metadata unavailable",
+                invalid_message="status metadata invalid",
+                too_large_message="status metadata too large",
+            )
+        except Exception:
+            pass
+
+    pid = int(owner.get("pid", 0) or status.get("pid", 0) or 0)
+    if pid > 0 and pid != os.getpid():
+        try:
+            os.kill(pid, 0)
+            raise ValueError(f"cannot resume run {candidate}: worker process (PID {pid}) is still running")
+        except OSError:
+            pass
+
+    return candidate, run_dir, owner
+
+
 def _fallback_hint(role: str, suffix: str) -> str:
     parent = _ROLE_PARENTS[role]
     chain = ([_flag(parent, suffix)] if parent else []) + [f"--{suffix}"]
@@ -553,6 +614,18 @@ def main(argv: list[str] | None = None) -> int:
         default=run_default("max_rounds"),
         help=f"Maximum number of manage-execute-audit rounds (1-{MAX_ROUNDS}). If omitted, uses {_DEFAULT_MAX_ROUNDS}.",
     )
+    run_parser.add_argument(
+        "--auto-retry-quota",
+        action=argparse.BooleanOptionalAction,
+        default=run_default("auto_retry_quota", True),
+        help="Automatically wait and retry when a provider quota or rate limit reset is reached.",
+    )
+    run_parser.add_argument(
+        "--max-quota-wait",
+        type=_positive_int,
+        default=run_default("max_quota_wait_seconds", 86400),
+        help="Maximum seconds to wait for a provider limit reset (default: 86400).",
+    )
     for role, timeout in _BUDGET_OPTIONS:
         scope = _ROLE_SCOPES[role]
         run_parser.add_argument(
@@ -692,13 +765,80 @@ def main(argv: list[str] | None = None) -> int:
         help="Replace an existing project configuration file.",
     )
 
+    resume_parser = add_command("resume", "Resume an interrupted, stopped, or failed run in-place")
+    resume_parser.add_argument("run_id", help="Run ID to resume.")
+    resume_parser.add_argument(
+        "--runs-root",
+        default=run_default("runs_root", _DEFAULT_RUNS_ROOT),
+        help="Base directory holding runs.",
+    )
+    resume_parser.add_argument(
+        "--extra-rounds",
+        type=_positive_int,
+        default=None,
+        help="Additional rounds to run.",
+    )
+    resume_parser.add_argument(
+        "--workspace",
+        default=None,
+        help="Override the working directory for the resumed run.",
+    )
+    resume_parser.add_argument(
+        "--agent",
+        default=None,
+        choices=_AGENT_CHOICES,
+        help="Override agent for the resumed run.",
+    )
+    resume_parser.add_argument(
+        "--model",
+        default=None,
+        help="Override model for the resumed run.",
+    )
+    resume_parser.add_argument(
+        "--dashboard",
+        action=argparse.BooleanOptionalAction,
+        default=run_default("dashboard", True),
+        help="Launch the web dashboard in the background for live monitoring.",
+    )
+
     add_command("check-update", "Check PyPI for a newer LongHorizon-Harness release")
 
     args = parser.parse_args(raw_argv)
-    if args.command == "run":
+    if args.command in {"run", "resume"}:
         if config_error is not None:
             parser.error(str(config_error))
         _apply_repeatable_defaults(args, run_defaults)
+        if args.command == "resume":
+            args.resume = True
+            args.max_rounds = getattr(args, "extra_rounds", None)
+            args.task = None
+            for attr, val in [
+                ("log_dir", run_default("log_dir")),
+                ("harness_dir", run_default("harness_dir")),
+                ("prompt_language", run_default("prompt_language", "en")),
+                ("manager_timeout", run_default("manager_timeout", 300)),
+                ("gui_executor_timeout", run_default("gui_executor_timeout", 1800)),
+                ("cli_executor_timeout", run_default("cli_executor_timeout", 1800)),
+                ("auditor_timeout", run_default("auditor_timeout", 300)),
+                ("api_key", None),
+                ("base_url", run_default("base_url")),
+                ("claude_mcp_config", run_default("claude_mcp_config")),
+                ("codex_mcp_config", run_default("codex_mcp_config")),
+                ("mcp_add_dir", None),
+                ("guard_exclude_path", None),
+                ("dashboard_port", run_default("dashboard_port", 0)),
+                ("dashboard_host", "127.0.0.1"),
+                ("dashboard_no_open", False),
+                ("dashboard_auth_token", os.environ.get("LH_HARNESS_WEB_TOKEN")),
+                ("keep_dashboard", False),
+                ("supervised", False),
+                ("env", run_default("env", "local")),
+                ("reasoning_effort", run_default("reasoning_effort")),
+                ("auto_retry_quota", run_default("auto_retry_quota", True)),
+                ("max_quota_wait", run_default("max_quota_wait_seconds", 86400)),
+            ]:
+                if not hasattr(args, attr):
+                    setattr(args, attr, val)
         if PROJECT_CONFIG_PATH.is_file():
             print(f"Using config: {PROJECT_CONFIG_PATH.resolve()}")
         return _run_command(args)
@@ -1476,18 +1616,14 @@ def _run_command(args: argparse.Namespace) -> int:
             )
             return 1
 
-    # ``--resume`` reopens an existing run directory and continues its ledger.
-    # Only the supervisor may do that: it is the component that verifies the
-    # run is terminal, owns the reservation, and bumps the resume generation.
-    # Allowing it standalone would let any caller reattach to another run.
-    if getattr(args, "resume", False) and not getattr(args, "supervised", False):
-        print("Cannot start run: --resume is only available to supervised workers", file=sys.stderr)
-        return 2
+    is_resume = getattr(args, "resume", False)
+    is_supervised = getattr(args, "supervised", False)
 
     max_rounds = args.max_rounds
     if max_rounds is None:
         max_rounds = _DEFAULT_MAX_ROUNDS
-        print(f"--max-rounds was not set; using the default of {max_rounds} rounds.")
+        if not is_resume:
+            print(f"--max-rounds was not set; using the default of {max_rounds} rounds.")
     if isinstance(max_rounds, bool) or not isinstance(max_rounds, int) or not 1 <= max_rounds <= MAX_ROUNDS:
         print(f"Cannot start run: max_rounds must be an integer from 1 to {MAX_ROUNDS}", file=sys.stderr)
         return 2
@@ -1497,8 +1633,9 @@ def _run_command(args: argparse.Namespace) -> int:
     # this worker read an arbitrary regular file even though adoption would
     # later be rejected by the owner/status checks.
     pre_adopted: tuple[str, Path] | None = None
+    saved_owner: dict[str, Any] = {}
     try:
-        if getattr(args, "supervised", False):
+        if is_supervised:
             pre_adopted = _adopt_supervised_run_dir(
                 args.runs_root,
                 args.run_id,
@@ -1510,6 +1647,39 @@ def _run_command(args: argparse.Namespace) -> int:
                 max_rounds=max_rounds,
             )
             task = _read_supervised_task(args.task, run_dir=pre_adopted[1])
+        elif is_resume:
+            if not args.run_id:
+                raise ValueError("run id is required when resuming")
+            run_id, run_dir, saved_owner = _resume_standalone_run_dir(args.runs_root, args.run_id)
+            if not getattr(args, "task", None):
+                task = str(saved_owner.get("task") or "")
+                if not task:
+                    from .supervisor.service import _saved_task_from_rounds
+                    task = _saved_task_from_rounds(Path(args.runs_root), run_id, first_line=False)
+                if not task:
+                    raise ValueError(f"cannot find task for run {run_id}")
+            else:
+                task = _read_task(args.task)
+
+            if saved_owner.get("agent") and (not getattr(args, "agent", None) or args.agent == run_default("agent", "codex")):
+                args.agent = str(saved_owner["agent"])
+            if saved_owner.get("model") and not getattr(args, "model", None):
+                args.model = str(saved_owner["model"])
+
+            if getattr(args, "workspace", None):
+                workspace = str(Path(args.workspace).expanduser().resolve())
+            elif saved_owner.get("workspace"):
+                workspace = str(saved_owner["workspace"])
+
+            if getattr(args, "extra_rounds", None) is not None:
+                max_rounds = args.extra_rounds
+            elif getattr(args, "max_rounds", None) is not None:
+                max_rounds = args.max_rounds
+            elif saved_owner.get("max_rounds"):
+                try:
+                    max_rounds = int(saved_owner["max_rounds"])
+                except (TypeError, ValueError):
+                    pass
         else:
             task = _read_task(args.task)
     except (OSError, UnicodeError, ValueError) as exc:
@@ -1520,7 +1690,7 @@ def _run_command(args: argparse.Namespace) -> int:
     # mixes with a previous run's tmp/log/workspace data (and the dashboard shows
     # only the current run).
     try:
-        if getattr(args, "supervised", False):
+        if is_supervised:
             # The supervisor has already reserved this directory and bound its
             # owner PID. Do not call _reserve_run_dir(), which would correctly
             # reject an existing directory for ordinary CLI invocations.
@@ -1537,11 +1707,38 @@ def _run_command(args: argparse.Namespace) -> int:
             if pre_adopted is not None and run_id != pre_adopted[0]:
                 raise ValueError("supervised run reservation changed during bootstrap")
             _claim_supervised_owner(run_id, run_dir)
+        elif is_resume:
+            pass
         else:
             run_id, run_dir = _reserve_run_dir(args.runs_root, args.run_id)
     except ValueError as exc:
         print(f"Cannot start run: {exc}", file=sys.stderr)
         return 2
+
+    if is_resume and not is_supervised:
+        from .supervisor.control_bus import ControlBus
+        bus = ControlBus(run_dir)
+        new_owner = {
+            **saved_owner,
+            "run_id": run_id,
+            "pid": os.getpid(),
+            "pgid": os.getpid(),
+            "state": "running",
+            "task": task,
+            "agent": args.agent,
+            "model": args.model,
+            "workspace": workspace,
+            "max_rounds": max_rounds,
+        }
+        bus.write_owner(new_owner)
+        bus.write_status({
+            "run_id": run_id,
+            "status": "running",
+            "pid": os.getpid(),
+            "started_at": time.time(),
+            "workspace": workspace,
+            "alive": True,
+        })
 
     log_dir = str(Path(args.log_dir).expanduser() if args.log_dir else run_dir / "lh_harness")
     if getattr(args, "supervised", False):
@@ -1626,6 +1823,8 @@ def _run_command(args: argparse.Namespace) -> int:
         harness_dir=harness_dir,
         log_dir=log_dir,
         prompt_language=args.prompt_language,
+        auto_retry_quota=bool(args.auto_retry_quota),
+        max_quota_wait_seconds=float(args.max_quota_wait),
     )
     env = _build_env(args.env, tmp_dir=str(run_dir / "tmp"))
 
