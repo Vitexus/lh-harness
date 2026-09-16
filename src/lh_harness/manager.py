@@ -428,27 +428,49 @@ async def _run_impl(
         manager_failure = classify_agent_runtime_failure(manager_result)
         if manager_failure is not None:
             recoverable_timeout = manager_failure.kind == "timeout"
+            recoverable_quota = False
+            delay = 0.0
+            if manager_failure.kind in {"quota", "rate_limit"} and getattr(config, "auto_retry_quota", True):
+                delay = manager_failure.reset_delay_seconds or getattr(config, "default_quota_retry_delay", 60.0)
+                if delay <= getattr(config, "max_quota_wait_seconds", 86400.0):
+                    recoverable_quota = True
+
+            if recoverable_quota:
+                await _async_wait_for_reset(
+                    delay,
+                    events_path,
+                    round_index,
+                    "manager",
+                    manager_failure.user_message,
+                    emit,
+                )
+                feedback_msg = (
+                    f"{manager_failure.user_message}\n\n[Harness waited {int(delay)}s for limit reset before resuming]"
+                )
+            else:
+                feedback_msg = manager_failure.user_message
+
             plan_text = (
-                ("Next: invalid\n\nReason:\n" if recoverable_timeout else "Next: blocked\n\nReason:\n")
-                + manager_failure.user_message
+                ("Next: invalid\n\nReason:\n" if (recoverable_timeout or recoverable_quota) else "Next: blocked\n\nReason:\n")
+                + feedback_msg
                 if config.prompt_language == "en"
-                else ("下一步: 无效\n\n原因:\n" if recoverable_timeout else "下一步: 阻塞\n\n阻塞原因:\n")
-                + manager_failure.user_message
+                else ("下一步: 无效\n\n原因:\n" if (recoverable_timeout or recoverable_quota) else "下一步: 阻塞\n\n阻塞原因:\n")
+                + feedback_msg
             )
             record = ManagedRound(
                 round_index=round_index,
-                next_step=MANAGER_NEXT_INVALID if recoverable_timeout else MANAGER_NEXT_BLOCKED,
+                next_step=MANAGER_NEXT_INVALID if (recoverable_timeout or recoverable_quota) else MANAGER_NEXT_BLOCKED,
                 plan_text=plan_text,
-                harness_feedback=manager_failure.user_message,
+                harness_feedback=feedback_msg,
                 task_state=current_task_state,
                 task_contract=current_task_contract,
                 manager_status=_failed_episode_status(
                     manager_result, manager_failure.user_message
                 ),
-                auditor_status={"invalid_plan": True} if recoverable_timeout else {},
+                auditor_status={"invalid_plan": True} if (recoverable_timeout or recoverable_quota) else {},
             )
             _write_local(round_dir / "manager_plan.txt", plan_text)
-            _write_local(round_dir / "harness_feedback.txt", manager_failure.user_message)
+            _write_local(round_dir / "harness_feedback.txt", feedback_msg)
             rounds.append(record)
             await _record_round(env, config, role_dir, events_path, record)
             _append_event(
@@ -459,6 +481,7 @@ async def _run_impl(
                     "phase": "manager",
                     "kind": manager_failure.kind,
                     "message": manager_failure.message,
+                    "quota_waited_seconds": delay if recoverable_quota else None,
                     **_episode_event_fields(
                         manager_result,
                         event_status="failed",
@@ -474,10 +497,11 @@ async def _run_impl(
                 duration_ms=manager_result.duration_ms,
                 error=manager_failure.user_message,
             )
-            if recoverable_timeout:
+            if recoverable_timeout or recoverable_quota:
                 if await _human_gate(gate, "progress", round_index, current_task_state):
                     break
                 continue
+
             gate.abort_reason = manager_failure.abort_reason
             gate.failure_reason = manager_failure.user_message
             break
@@ -709,12 +733,34 @@ async def _run_impl(
         executor_failure = classify_agent_runtime_failure(executor_result)
         if executor_failure is not None:
             recoverable_timeout = executor_failure.kind == "timeout"
+            recoverable_quota = False
+            delay = 0.0
+            if executor_failure.kind in {"quota", "rate_limit"} and getattr(config, "auto_retry_quota", True):
+                delay = executor_failure.reset_delay_seconds or getattr(config, "default_quota_retry_delay", 60.0)
+                if delay <= getattr(config, "max_quota_wait_seconds", 86400.0):
+                    recoverable_quota = True
+
+            if recoverable_quota:
+                await _async_wait_for_reset(
+                    delay,
+                    events_path,
+                    round_index,
+                    f"{next_step}_executor",
+                    executor_failure.user_message,
+                    emit,
+                )
+                feedback_msg = (
+                    f"{executor_failure.user_message}\n\n[Harness waited {int(delay)}s for limit reset before resuming]"
+                )
+            else:
+                feedback_msg = executor_failure.user_message
+
             record = ManagedRound(
                 round_index=round_index,
                 next_step=next_step,
                 plan_text=plan_text,
                 executor_output=executor_output if recoverable_timeout else "",
-                harness_feedback=executor_failure.user_message,
+                harness_feedback=feedback_msg,
                 task_state=current_task_state,
                 task_contract=current_task_contract,
                 related_report_refs=related_report_refs,
@@ -723,7 +769,7 @@ async def _run_impl(
                     executor_result, executor_failure.user_message
                 ),
             )
-            _write_local(round_dir / "harness_feedback.txt", executor_failure.user_message)
+            _write_local(round_dir / "harness_feedback.txt", feedback_msg)
             rounds.append(record)
             await _record_round(env, config, role_dir, events_path, record)
             _append_event(
@@ -734,6 +780,7 @@ async def _run_impl(
                     "phase": "executor",
                     "kind": executor_failure.kind,
                     "message": executor_failure.message,
+                    "quota_waited_seconds": delay if recoverable_quota else None,
                     **_episode_event_fields(
                         executor_result,
                         event_status="failed",
@@ -749,10 +796,11 @@ async def _run_impl(
                 duration_ms=executor_result.duration_ms,
                 error=executor_failure.user_message,
             )
-            if recoverable_timeout:
+            if recoverable_timeout or recoverable_quota:
                 if await _human_gate(gate, "progress", round_index, current_task_state):
                     break
                 continue
+
             gate.abort_reason = executor_failure.abort_reason
             gate.failure_reason = executor_failure.user_message
             break
@@ -848,51 +896,75 @@ async def _run_impl(
         auditor_failure = classify_agent_runtime_failure(auditor_result)
         if auditor_failure is not None:
             recoverable_timeout = auditor_failure.kind == "timeout"
-            record = ManagedRound(
-                round_index=round_index,
-                next_step=next_step,
-                plan_text=plan_text,
-                executor_output=executor_output,
-                harness_feedback=auditor_failure.user_message,
-                task_state=current_task_state,
-                task_contract=current_task_contract,
-                related_report_refs=related_report_refs,
-                manager_status=_episode_status(manager_result),
-                executor_status=_episode_status(executor_result),
-                auditor_status=_failed_episode_status(
-                    auditor_result, auditor_failure.user_message
-                ),
-            )
-            _write_local(round_dir / "harness_feedback.txt", auditor_failure.user_message)
-            rounds.append(record)
-            await _record_round(env, config, role_dir, events_path, record)
-            _append_event(
-                events_path,
-                "agent_runtime_failed",
-                {
-                    "round": round_index,
-                    "phase": "auditor",
-                    "kind": auditor_failure.kind,
-                    "message": auditor_failure.message,
-                    **_episode_event_fields(
-                        auditor_result,
-                        event_status="failed",
-                        error_message=auditor_failure.user_message,
+            recoverable_quota = False
+            delay = 0.0
+            if auditor_failure.kind in {"quota", "rate_limit"} and getattr(config, "auto_retry_quota", True):
+                delay = auditor_failure.reset_delay_seconds or getattr(config, "default_quota_retry_delay", 60.0)
+                if delay <= getattr(config, "max_quota_wait_seconds", 86400.0):
+                    recoverable_quota = True
+
+            if recoverable_timeout or recoverable_quota:
+                if recoverable_quota:
+                    await _async_wait_for_reset(
+                        delay,
+                        events_path,
+                        round_index,
+                        f"{next_step}_auditor",
+                        auditor_failure.user_message,
+                        emit,
+                    )
+                    feedback_msg = (
+                        f"{auditor_failure.user_message}\n\n[Harness waited {int(delay)}s for limit reset before resuming]"
+                    )
+                else:
+                    feedback_msg = auditor_failure.user_message
+
+                record = ManagedRound(
+                    round_index=round_index,
+                    next_step=next_step,
+                    plan_text=plan_text,
+                    executor_output=executor_output,
+                    harness_feedback=feedback_msg,
+                    task_state=current_task_state,
+                    task_contract=current_task_contract,
+                    related_report_refs=related_report_refs,
+                    manager_status=_episode_status(manager_result),
+                    executor_status=_episode_status(executor_result),
+                    auditor_status=_failed_episode_status(
+                        auditor_result, auditor_failure.user_message
                     ),
-                },
-            )
-            emit(
-                "role_done",
-                round=round_index,
-                role=f"{next_step}_auditor",
-                status="failed",
-                duration_ms=auditor_result.duration_ms,
-                error=auditor_failure.user_message,
-            )
-            if recoverable_timeout:
+                )
+                _write_local(round_dir / "harness_feedback.txt", feedback_msg)
+                rounds.append(record)
+                await _record_round(env, config, role_dir, events_path, record)
+                _append_event(
+                    events_path,
+                    "agent_runtime_failed",
+                    {
+                        "round": round_index,
+                        "phase": "auditor",
+                        "kind": auditor_failure.kind,
+                        "message": auditor_failure.message,
+                        "quota_waited_seconds": delay if recoverable_quota else None,
+                        **_episode_event_fields(
+                            auditor_result,
+                            event_status="failed",
+                            error_message=auditor_failure.user_message,
+                        ),
+                    },
+                )
+                emit(
+                    "role_done",
+                    round=round_index,
+                    role=f"{next_step}_auditor",
+                    status="failed",
+                    duration_ms=auditor_result.duration_ms,
+                    error=auditor_failure.user_message,
+                )
                 if await _human_gate(gate, "progress", round_index, current_task_state):
                     break
                 continue
+
             gate.abort_reason = auditor_failure.abort_reason
             gate.failure_reason = auditor_failure.user_message
             break
@@ -1019,6 +1091,38 @@ async def _run_impl(
         report_path=str(log_dir / "report.json"),
     )
     return final
+
+
+async def _async_wait_for_reset(
+    delay: float,
+    events_path: Path,
+    round_index: int,
+    phase: str,
+    failure_message: str,
+    emit: Callable[..., None],
+    poll_interval: float = 0.5,
+) -> None:
+    _append_event(
+        events_path,
+        "quota_limit_waiting",
+        {
+            "round": round_index,
+            "phase": phase,
+            "delay_seconds": round(delay, 2),
+            "message": failure_message,
+        },
+    )
+    emit(
+        "role_done",
+        round=round_index,
+        role=phase,
+        status="quota_waiting",
+        delay_seconds=round(delay, 2),
+        error=failure_message,
+    )
+    deadline = time.monotonic() + delay
+    while time.monotonic() < deadline:
+        await asyncio.sleep(min(poll_interval, max(0.05, deadline - time.monotonic())))
 
 
 def _discard_progress(*_args: Any, **_kwargs: Any) -> None:

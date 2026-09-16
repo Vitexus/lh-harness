@@ -484,10 +484,7 @@ def test_a_gate_without_the_round_input_rejects_a_grant(tmp_path: Path) -> None:
 # --- CLI surface ------------------------------------------------------------
 
 
-def test_resume_is_refused_outside_a_supervised_worker(capsys, tmp_path: Path) -> None:
-    # --resume reopens an existing run directory.  Only the supervisor verifies
-    # that the run is terminal and owns the reservation, so a standalone caller
-    # must not be able to reattach to somebody else's run.
+def test_standalone_resume_requires_run_id(capsys, tmp_path: Path) -> None:
     exit_code = cli.main([
         "run",
         "--task=anything",
@@ -497,8 +494,47 @@ def test_resume_is_refused_outside_a_supervised_worker(capsys, tmp_path: Path) -
     ])
 
     assert exit_code == 2
-    assert "only available to supervised workers" in capsys.readouterr().err
-    assert not (tmp_path / "runs").exists(), "the guard must reject before reserving a run"
+    assert "run id is required when resuming" in capsys.readouterr().err
+
+
+def test_standalone_resume_and_subcommand(tmp_path: Path, monkeypatch) -> None:
+    runs_root = tmp_path / "runs"
+    run_id = "test_run_001"
+    run_dir = runs_root / run_id
+    role = run_dir / "lh_harness" / "role_orchestration"
+    (run_dir / "control").mkdir(parents=True, exist_ok=True)
+    _write_ledger(role, [_round(1), _round(2)])
+    owner = {
+        "run_id": run_id,
+        "state": "cancelled",
+        "task": "do work",
+        "agent": "codex",
+        "max_rounds": 5,
+        "workspace": str(tmp_path),
+    }
+    (run_dir / "control" / "owner.json").write_text(json.dumps(owner), encoding="utf-8")
+    (run_dir / "control" / "status.json").write_text(
+        json.dumps({"run_id": run_id, "status": "cancelled", "alive": False}), encoding="utf-8"
+    )
+
+    ran = []
+
+    async def fake_run(*args, **kwargs):
+        ran.append(kwargs)
+        return {"completion_satisfied": True, "status": "complete", "rounds": []}
+
+    monkeypatch.setattr("lh_harness.manager.run", fake_run)
+
+    exit_code = cli.main([
+        "resume",
+        run_id,
+        f"--runs-root={runs_root}",
+        f"--workspace={tmp_path}",
+    ])
+
+    assert exit_code == 0
+    assert len(ran) == 1
+    assert ran[0]["resume"] is True
 
 
 def test_the_worker_command_carries_resume_only_when_asked(tmp_path: Path) -> None:

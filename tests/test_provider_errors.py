@@ -1,7 +1,46 @@
 """Classification boundaries for terminal agent-CLI failures."""
 
-from lh_harness.provider_errors import classify_agent_runtime_failure
+from datetime import datetime, timezone, timedelta
+from lh_harness.provider_errors import classify_agent_runtime_failure, parse_quota_reset_delay
 from lh_harness.types import EpisodeResult
+
+
+def test_parse_quota_reset_delay_clock_time():
+    # 2026-08-20 10:00:00 UTC
+    now = datetime(2026, 8, 20, 10, 0, 0, tzinfo=timezone.utc)
+    # Europe/Prague is UTC+2 in summer, so 12:20pm Europe/Prague is 10:20am UTC (1200 seconds later)
+    msg = "Provider limit hit: your session limit resets 12:20pm (Europe/Prague)"
+    delay = parse_quota_reset_delay(msg, now=now)
+    assert delay is not None
+    assert abs(delay - 1200.0) < 1.0
+
+
+def test_parse_quota_reset_delay_relative_duration():
+    now = datetime(2026, 8, 20, 10, 0, 0, tzinfo=timezone.utc)
+    msg = "quota exceeded, resets in 45 minutes"
+    delay = parse_quota_reset_delay(msg, now=now)
+    assert delay == 2700.0
+
+    msg_h_m = "retry in 1h 20m"
+    delay_h_m = parse_quota_reset_delay(msg_h_m, now=now)
+    assert delay_h_m == 4800.0
+
+
+def test_parse_quota_reset_delay_iso():
+    now = datetime(2026, 8, 20, 10, 0, 0, tzinfo=timezone.utc)
+    msg = "limit reached, resets 2026-08-20T11:00:00Z"
+    delay = parse_quota_reset_delay(msg, now=now)
+    assert delay == 3600.0
+
+
+def test_classify_agent_runtime_failure_extracts_reset_delay():
+    msg = "Provider 额度或计费限制：You've hit your monthly spend limit · your session limit resets 12:20pm (Europe/Prague)"
+    result = EpisodeResult(status="error", error=msg)
+    failure = classify_agent_runtime_failure(result)
+    assert failure is not None
+    assert failure.kind == "quota"
+    assert failure.reset_delay_seconds is not None
+    assert failure.reset_delay_seconds > 0
 
 
 def test_guard_snapshot_failure_is_not_a_runtime_failure():

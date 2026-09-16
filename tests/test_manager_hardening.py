@@ -196,6 +196,51 @@ async def test_reopening_a_run_withdraws_the_round_reply_the_dashboard_reads(tmp
 
 
 @pytest.mark.asyncio
+async def test_quota_limit_waits_and_retries_next_round(tmp_path: Path, monkeypatch) -> None:
+    quota_msg = "Provider 额度或计费限制：resets in 2 seconds"
+    outputs = iter([
+        EpisodeResult(status="error", error=quota_msg),
+        EpisodeResult(status="done", actions_log="Next: cli\n\nCurrent Task State:\nworking"),
+        EpisodeResult(status="done", actions_log="executor output"),
+        EpisodeResult(
+            status="done",
+            actions_log="Status: complete\nIntegrity: clean\nContract audit: aligned\n\nSummary:\nverified",
+        ),
+        EpisodeResult(status="done", actions_log="Next: done\n\nCurrent Task State:\nfinished after retry"),
+    ])
+
+    class QuotaThenSuccessAgent:
+        async def run_episode(self, _prompt, _env, _budget, live_trajectory_path=None):
+            return next(outputs)
+
+    waited = []
+
+    async def fake_sleep(seconds):
+        waited.append(seconds)
+
+    monkeypatch.setattr("asyncio.sleep", fake_sleep)
+
+    config = HarnessConfig(
+        max_total_episodes=5,
+        workspace_path=str(tmp_path / "workspace"),
+        harness_dir=str(tmp_path / "harness"),
+        log_dir=str(tmp_path / "logs"),
+        auto_retry_quota=True,
+    )
+    result = await run(
+        task="test quota auto retry",
+        env=LocalEnvironment(str(tmp_path / "tmp")),
+        config=config,
+        agent=QuotaThenSuccessAgent(),
+    )
+
+    assert result["status"] == "complete"
+    assert result["rounds_run"] == 3
+    assert waited
+    assert "waited" in result["rounds"][0]["harness_feedback"].lower()
+
+
+@pytest.mark.asyncio
 async def test_provider_failure_stops_without_round_limit_approval(tmp_path: Path) -> None:
     message = "The 'bad-model' model is not supported when using Codex with a ChatGPT account."
 

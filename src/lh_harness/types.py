@@ -124,6 +124,9 @@ class HarnessConfig:
     # English is the production default; Chinese remains available for
     # OSWorldv2-compatible role prompts and operator-facing control headers.
     prompt_language: PromptLanguage = "en"
+    auto_retry_quota: bool = True
+    max_quota_wait_seconds: float = 86400.0
+    default_quota_retry_delay: float = 60.0
 
 
 def audit_report_to_dict(report: AuditReport) -> dict[str, Any]:

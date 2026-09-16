@@ -5,7 +5,13 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone, timedelta
 from typing import Any
+
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    ZoneInfo = None  # type: ignore
 
 from .runtime_signals import hard_signal_labels
 from .types import EpisodeResult
@@ -21,12 +27,134 @@ GUARD_REJECTION_MESSAGE = (
 )
 
 
+_TZ_ABBREVS: dict[str, timezone | timedelta] = {
+    "UTC": timezone.utc,
+    "GMT": timezone.utc,
+    "Z": timezone.utc,
+    "PST": timezone(timedelta(hours=-8)),
+    "PDT": timezone(timedelta(hours=-7)),
+    "EST": timezone(timedelta(hours=-5)),
+    "EDT": timezone(timedelta(hours=-4)),
+    "CST": timezone(timedelta(hours=-6)),
+    "CDT": timezone(timedelta(hours=-5)),
+    "MST": timezone(timedelta(hours=-7)),
+    "MDT": timezone(timedelta(hours=-6)),
+    "CET": timezone(timedelta(hours=1)),
+    "CEST": timezone(timedelta(hours=2)),
+}
+
+_CLOCK_TIME_PATTERN = re.compile(
+    r"(?:resets?|retry|reset|until|limit resets)\s+(?:at\s+)?(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(am|pm)?(?:\s*\(([^)]+)\)|\s+([A-Za-z_/+]+))?",
+    re.I,
+)
+
+_DURATION_PATTERN = re.compile(
+    r"(?:resets?|retry|try again|wait)\s+(?:in|after)\s+((?:\d+\s*(?:h|hr|hours?|m|min|minutes?|s|sec|seconds?)\s*)+)",
+    re.I,
+)
+
+_ISO_PATTERN = re.compile(
+    r"\b(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)\b",
+    re.I,
+)
+
+
+def _parse_tz(tz_str: str | None) -> timezone | ZoneInfo | None:
+    if not tz_str:
+        return None
+    tz_clean = tz_str.strip()
+    if tz_clean.upper() in _TZ_ABBREVS:
+        return _TZ_ABBREVS[tz_clean.upper()]
+    if ZoneInfo is not None:
+        try:
+            return ZoneInfo(tz_clean)
+        except Exception:
+            pass
+    return None
+
+
+def parse_quota_reset_delay(message: str, now: datetime | None = None) -> float | None:
+    """Extract quota/rate limit reset delay in seconds from provider error messages.
+
+    Supports clock times with timezones (e.g. `resets 12:20pm (Europe/Prague)`),
+    relative durations (e.g. `resets in 45 minutes`), and ISO timestamps.
+    Returns delay in seconds if parsed, otherwise None.
+    """
+    if not message:
+        return None
+
+    if now is None:
+        now = datetime.now(timezone.utc)
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+
+    # 1. Clock time match (e.g., resets 12:20pm (Europe/Prague))
+    clock_match = _CLOCK_TIME_PATTERN.search(message)
+    if clock_match:
+        hour = int(clock_match.group(1))
+        minute = int(clock_match.group(2))
+        second = int(clock_match.group(3)) if clock_match.group(3) else 0
+        ampm = clock_match.group(4).lower() if clock_match.group(4) else None
+        tz_str = clock_match.group(5) or clock_match.group(6)
+
+        if ampm:
+            if ampm == "pm" and hour < 12:
+                hour += 12
+            elif ampm == "am" and hour == 12:
+                hour = 0
+
+        tz = _parse_tz(tz_str)
+        now_in_tz = now.astimezone(tz) if tz is not None else now
+        target_dt = now_in_tz.replace(hour=hour, minute=minute, second=second, microsecond=0)
+
+        # If target_dt is in the past by > 60s, assume it's tomorrow
+        if target_dt <= now_in_tz - timedelta(seconds=60):
+            target_dt += timedelta(days=1)
+
+        delay = (target_dt - now_in_tz).total_seconds()
+        return max(0.0, delay)
+
+    # 2. Relative duration match (e.g., resets in 45 minutes, retry in 1h20m)
+    dur_match = _DURATION_PATTERN.search(message)
+    if dur_match:
+        dur_str = dur_match.group(1)
+        units = re.findall(r"(\d+)\s*(h|hr|hours?|m|min|minutes?|s|sec|seconds?)", dur_str, re.I)
+        if units:
+            total_seconds = 0.0
+            for val_str, unit in units:
+                val = float(val_str)
+                unit_lower = unit.lower()
+                if unit_lower.startswith("h"):
+                    total_seconds += val * 3600
+                elif unit_lower.startswith("m"):
+                    total_seconds += val * 60
+                elif unit_lower.startswith("s"):
+                    total_seconds += val
+            return max(0.0, total_seconds)
+
+    # 3. ISO timestamp match
+    iso_match = _ISO_PATTERN.search(message)
+    if iso_match:
+        iso_str = iso_match.group(1)
+        try:
+            target_dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+            if target_dt.tzinfo is None:
+                target_dt = target_dt.replace(tzinfo=timezone.utc)
+            delay = (target_dt - now).total_seconds()
+            return max(0.0, delay)
+        except Exception:
+            pass
+
+    return None
+
+
 @dataclass(frozen=True)
 class AgentRuntimeFailure:
     kind: str
     abort_reason: str
     message: str
     user_message: str
+    reset_delay_seconds: float | None = None
 
 
 _CLASSIFIERS: tuple[tuple[str, re.Pattern[str], str], ...] = (
@@ -132,11 +260,13 @@ def classify_agent_runtime_failure(result: EpisodeResult) -> AgentRuntimeFailure
     message = next((item for item in candidates if _specific_message(item)), None)
     message = message or next(iter(candidates), "agent runtime failed")
     message = _clean(message, 1200)
+    reset_delay = parse_quota_reset_delay(combined) if kind in {"quota", "rate_limit"} else None
     return AgentRuntimeFailure(
         kind=kind,
         abort_reason=f"provider_{kind}",
         message=message,
         user_message=f"{label}：{message}",
+        reset_delay_seconds=reset_delay,
     )
 
 

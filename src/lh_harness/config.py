@@ -43,6 +43,9 @@ _RUN_KEYS = {
     "max_rounds",
     "dashboard",
     "dashboard_port",
+    "auto_retry_quota",
+    "max_quota_wait_seconds",
+    "default_quota_retry_delay",
     "roles",
     "timeouts",
 }
@@ -207,6 +210,12 @@ def _flatten_run_table(run: dict[str, Any]) -> dict[str, Any]:
         defaults["dashboard"] = _boolean(run["dashboard"], "run.dashboard")
     if "dashboard_port" in run:
         defaults["dashboard_port"] = _port(run["dashboard_port"], "run.dashboard_port")
+    if "auto_retry_quota" in run:
+        defaults["auto_retry_quota"] = _boolean(run["auto_retry_quota"], "run.auto_retry_quota")
+    if "max_quota_wait_seconds" in run:
+        defaults["max_quota_wait_seconds"] = float(_positive_int(run["max_quota_wait_seconds"], "run.max_quota_wait_seconds"))
+    if "default_quota_retry_delay" in run:
+        defaults["default_quota_retry_delay"] = float(_positive_int(run["default_quota_retry_delay"], "run.default_quota_retry_delay"))
     if "mcp_add_dirs" in run:
         value = run["mcp_add_dirs"]
         if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
